@@ -4,7 +4,7 @@
 
 ## Context
 
-Portfolio project, built solo, following the same brainstorm → spec → plan → implementation workflow used for the "Vez de Quem?" project. Target audience: anyone browsing the author's GitHub profile, plus (secondarily) real GitHub users who might install the app.
+Standalone portfolio project, built solo, following a brainstorm → spec → plan → implementation workflow. Target audience: anyone browsing the author's GitHub profile, plus (secondarily) real GitHub users who might install the app.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ A single FastAPI backend, no frontend and no database for v1:
 
 ## Deployment
 
-Render web service (Docker), same pattern as "Vez de Quem?": `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` as Render secrets. No database service needed. The GitHub App's "Homepage URL" can point at the GitHub repo itself for v1 — no landing page needed to ship the working bot.
+Render web service (Docker): `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` as Render secrets. No database service needed. The GitHub App's "Homepage URL" can point at the GitHub repo itself for v1 — no landing page needed to ship the working bot.
 
 ## Out of scope for v1
 
