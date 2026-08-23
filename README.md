@@ -18,6 +18,12 @@ idempotent reconciliation against an external API -- no database needed.
     pytest tests/unit tests/integration -v
     make run
 
+`GITHUB_APP_PRIVATE_KEY` is a multi-line PEM value. In a local `.env` file it
+must be wrapped in quotes (e.g. `GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA
+PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"`) so `pydantic-settings`
+parses it as a single value -- otherwise it fails silently at startup and
+only surfaces as an opaque parsing error on the first webhook delivery.
+
 ## Creating the GitHub App
 
 1. GitHub -> Settings -> Developer settings -> GitHub Apps -> New GitHub App.

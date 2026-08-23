@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
@@ -28,7 +29,12 @@ async def receive_webhook(
     request: Request,
     x_hub_signature_256: str | None = Header(default=None),
     x_github_event: str | None = Header(default=None),
+    x_github_delivery: str | None = Header(default=None),
 ) -> dict[str, str]:
+    if not settings.github_webhook_secret:
+        logger.error("GITHUB_WEBHOOK_SECRET is not configured; refusing webhook")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="not configured")
+
     raw_body = await request.body()
     if not verify_signature(raw_body, x_hub_signature_256, settings.github_webhook_secret):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid signature")
@@ -36,17 +42,23 @@ async def receive_webhook(
     if x_github_event != "pull_request":
         return {"status": "ignored"}
 
-    payload = await request.json()
-    action = payload.get("action")
-    if action not in HANDLED_ACTIONS:
-        return {"status": "ignored"}
-
+    action = None
     try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise TypeError("payload is not a JSON object")
+        action = payload.get("action")
+        if action not in HANDLED_ACTIONS:
+            return {"status": "ignored"}
+
         installation_id = payload["installation"]["id"]
         pr_number = payload["pull_request"]["number"]
         pr_body = payload["pull_request"]["body"]
         repo_full_name = payload["repository"]["full_name"]
-    except KeyError:
+    except (KeyError, TypeError, AttributeError, json.JSONDecodeError):
+        logger.warning(
+            "Unexpected payload shape action=%s delivery=%s", action, x_github_delivery
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unexpected payload shape")
 
     lock = get_lock(repo_full_name, pr_number)

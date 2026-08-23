@@ -87,6 +87,34 @@ async def test_rejects_an_invalid_signature():
     assert response.status_code == 401
 
 
+async def test_returns_500_when_the_webhook_secret_is_not_configured(monkeypatch):
+    monkeypatch.setattr(settings, "github_webhook_secret", "")
+    payload = _load_fixture("pull_request_opened.json")
+    response = await _post_webhook(payload, signed=False)
+    assert response.status_code == 500
+
+
+async def test_returns_400_for_a_non_json_body():
+    transport = ASGITransport(app=app)
+    headers = {
+        "X-GitHub-Event": "pull_request",
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": _sign(b"not json"),
+    }
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/webhook", content=b"not json", headers=headers)
+    assert response.status_code == 400
+
+
+async def test_returns_400_for_a_payload_missing_a_required_field(caplog):
+    payload = _load_fixture("pull_request_opened.json")
+    del payload["pull_request"]["number"]
+    with caplog.at_level("WARNING"):
+        response = await _post_webhook(payload)
+    assert response.status_code == 400
+    assert any("Unexpected payload shape" in record.message for record in caplog.records)
+
+
 async def test_ignores_a_non_pull_request_event():
     payload = _load_fixture("pull_request_opened.json")
     response = await _post_webhook(payload, event="issues")

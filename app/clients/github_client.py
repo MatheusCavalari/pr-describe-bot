@@ -28,6 +28,7 @@ class GitHubClient:
             response = await client.get(
                 f"{GITHUB_API_BASE}/repos/{repo_full_name}/issues/{pr_number}/comments",
                 headers=self._headers(),
+                params={"per_page": 100},
             )
             response.raise_for_status()
             return [Comment(id=c["id"], body=c["body"]) for c in response.json()]
