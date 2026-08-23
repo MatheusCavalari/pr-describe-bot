@@ -35,9 +35,12 @@ class FakeGitHubClient:
         self.deleted: list[tuple[str, int]] = []
 
     async def list_issue_comments(self, repo_full_name: str, pr_number: int) -> list[Comment]:
-        return self.existing_comments
+        snapshot = self.existing_comments
+        await asyncio.sleep(0.01)  # a real HTTP call suspends here
+        return snapshot
 
     async def create_comment(self, repo_full_name: str, pr_number: int, body: str) -> None:
+        await asyncio.sleep(0.01)  # a real HTTP call suspends here
         self.created.append((repo_full_name, pr_number, body))
         # Mirror real GitHub behavior: once created, a subsequent list call
         # would see it. Without this, the concurrency test below can never
@@ -145,8 +148,12 @@ async def test_concurrent_webhooks_for_the_same_pr_create_only_one_comment(monke
     _use_fake_client(monkeypatch, fake_client)
 
     payload = _load_fixture("pull_request_opened.json")
-    # Both requests see the same "no comments yet" snapshot from FakeGitHubClient
-    # unless the lock in app/routers/webhook.py actually serializes them.
+    # FakeGitHubClient.list_issue_comments/create_comment each suspend
+    # (await asyncio.sleep) before returning, so the two requests genuinely
+    # interleave under asyncio.gather instead of running back-to-back.
+    # Without the per-PR lock in app/routers/webhook.py serializing them,
+    # both would read the "no comments yet" snapshot before either creates
+    # one, and both would create a comment.
     responses = await asyncio.gather(_post_webhook(payload), _post_webhook(payload))
 
     assert all(r.status_code == 200 for r in responses)
