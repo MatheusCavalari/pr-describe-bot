@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 import respx
@@ -5,96 +7,86 @@ import respx
 from app.clients.github_client import GitHubClient
 
 REPO = "octocat/hello-world"
+SHA = "abc123"
 
 
 @respx.mock
-async def test_list_issue_comments_parses_the_response():
-    respx.get(f"https://api.github.com/repos/{REPO}/issues/5/comments").mock(
+async def test_list_check_runs_for_ref_parses_the_response():
+    respx.get(f"https://api.github.com/repos/{REPO}/commits/{SHA}/check-runs").mock(
         return_value=httpx.Response(
             200,
-            json=[
-                {"id": 1, "body": "first", "user": {"type": "Bot"}},
-                {"id": 2, "body": "second", "user": {"type": "User"}},
-            ],
+            json={
+                "check_runs": [
+                    {"id": 1, "name": "pr-describe-bot/description"},
+                    {"id": 2, "name": "pr-describe-bot/pr-size"},
+                ]
+            },
         )
     )
     client = GitHubClient("fake-token")
 
-    comments = await client.list_issue_comments(REPO, 5)
+    runs = await client.list_check_runs_for_ref(REPO, SHA, "pr-describe-bot/description")
 
-    assert [(c.id, c.body, c.is_bot) for c in comments] == [
-        (1, "first", True),
-        (2, "second", False),
+    assert [(r.id, r.name) for r in runs] == [
+        (1, "pr-describe-bot/description"),
+        (2, "pr-describe-bot/pr-size"),
     ]
 
 
 @respx.mock
-async def test_list_issue_comments_treats_missing_user_as_not_bot():
-    respx.get(f"https://api.github.com/repos/{REPO}/issues/5/comments").mock(
-        return_value=httpx.Response(200, json=[{"id": 1, "body": "first"}])
+async def test_list_check_runs_for_ref_filters_by_check_name_and_paginates():
+    route = respx.get(f"https://api.github.com/repos/{REPO}/commits/{SHA}/check-runs").mock(
+        return_value=httpx.Response(200, json={"check_runs": []})
     )
     client = GitHubClient("fake-token")
 
-    comments = await client.list_issue_comments(REPO, 5)
+    await client.list_check_runs_for_ref(REPO, SHA, "pr-describe-bot/description")
 
-    assert comments[0].is_bot is False
+    params = route.calls[0].request.url.params
+    assert params["check_name"] == "pr-describe-bot/description"
+    assert params["per_page"] == "100"
 
 
 @respx.mock
-async def test_list_issue_comments_requests_a_full_page():
-    route = respx.get(f"https://api.github.com/repos/{REPO}/issues/5/comments").mock(
-        return_value=httpx.Response(200, json=[])
+async def test_create_check_run_posts_the_expected_body():
+    route = respx.post(f"https://api.github.com/repos/{REPO}/check-runs").mock(
+        return_value=httpx.Response(201, json={"id": 3})
     )
     client = GitHubClient("fake-token")
 
-    await client.list_issue_comments(REPO, 5)
+    await client.create_check_run(REPO, "pr-describe-bot/description", SHA, "failure", "title", "summary")
 
-    assert route.calls[0].request.url.params["per_page"] == "100"
+    request = route.calls[0].request
+    assert request.headers["x-github-api-version"] == "2022-11-28"
+    assert request.headers["authorization"] == "Bearer fake-token"
+    body = json.loads(request.content)
+    assert body == {
+        "name": "pr-describe-bot/description",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "failure",
+        "output": {"title": "title", "summary": "summary"},
+    }
 
 
 @respx.mock
-async def test_create_comment_posts_the_body():
-    route = respx.post(f"https://api.github.com/repos/{REPO}/issues/5/comments").mock(
-        return_value=httpx.Response(201, json={"id": 3, "body": "hi"})
+async def test_update_check_run_patches_by_id():
+    route = respx.patch(f"https://api.github.com/repos/{REPO}/check-runs/3").mock(
+        return_value=httpx.Response(200, json={"id": 3})
     )
     client = GitHubClient("fake-token")
 
-    await client.create_comment(REPO, 5, "hi")
-
-    assert route.calls[0].request.headers["x-github-api-version"] == "2022-11-28"
-    assert route.calls[0].request.headers["authorization"] == "Bearer fake-token"
-
-
-@respx.mock
-async def test_update_comment_patches_the_comment_by_id():
-    route = respx.patch(f"https://api.github.com/repos/{REPO}/issues/comments/3").mock(
-        return_value=httpx.Response(200, json={"id": 3, "body": "updated"})
-    )
-    client = GitHubClient("fake-token")
-
-    await client.update_comment(REPO, 3, "updated")
+    await client.update_check_run(REPO, 3, "success", "title", "summary")
 
     assert route.called
 
 
 @respx.mock
-async def test_delete_comment_deletes_by_id():
-    route = respx.delete(f"https://api.github.com/repos/{REPO}/issues/comments/3").mock(
-        return_value=httpx.Response(204)
-    )
-    client = GitHubClient("fake-token")
-
-    await client.delete_comment(REPO, 3)
-
-    assert route.called
-
-
-@respx.mock
-async def test_list_issue_comments_raises_on_error_response():
-    respx.get(f"https://api.github.com/repos/{REPO}/issues/5/comments").mock(
+async def test_list_check_runs_for_ref_raises_on_error_response():
+    respx.get(f"https://api.github.com/repos/{REPO}/commits/{SHA}/check-runs").mock(
         return_value=httpx.Response(404, json={"message": "Not Found"})
     )
     client = GitHubClient("fake-token")
 
     with pytest.raises(httpx.HTTPStatusError):
-        await client.list_issue_comments(REPO, 5)
+        await client.list_check_runs_for_ref(REPO, SHA, "pr-describe-bot/description")

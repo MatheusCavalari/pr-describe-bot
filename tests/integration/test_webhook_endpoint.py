@@ -8,7 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import app.routers.webhook as webhook_module
-from app.clients.github_client import Comment
+from app.clients.github_client import CheckRun
 from app.core.config import settings
 from app.main import app
 
@@ -28,34 +28,33 @@ def _sign(body: bytes) -> str:
 class FakeGitHubClient:
     """Records calls instead of hitting the real GitHub API."""
 
-    def __init__(self, existing_comments: list[Comment] | None = None):
-        self.existing_comments = existing_comments or []
-        self.created: list[tuple[str, int, str]] = []
-        self.updated: list[tuple[str, int, str]] = []
-        self.deleted: list[tuple[str, int]] = []
+    def __init__(self, existing_runs: list[CheckRun] | None = None):
+        self.runs = list(existing_runs or [])
+        self.created: list[tuple[str, str, str, str, str, str]] = []
+        self.updated: list[tuple[str, int, str, str, str]] = []
+        self._next_id = 1000
 
-    async def list_issue_comments(self, repo_full_name: str, pr_number: int) -> list[Comment]:
-        snapshot = self.existing_comments
+    async def list_check_runs_for_ref(self, repo_full_name: str, ref: str, check_name: str) -> list[CheckRun]:
+        snapshot = [r for r in self.runs if r.name == check_name]
         await asyncio.sleep(0.01)  # a real HTTP call suspends here
         return snapshot
 
-    async def create_comment(self, repo_full_name: str, pr_number: int, body: str) -> None:
+    async def create_check_run(
+        self, repo_full_name: str, name: str, head_sha: str, conclusion: str, title: str, summary: str
+    ) -> None:
         await asyncio.sleep(0.01)  # a real HTTP call suspends here
-        self.created.append((repo_full_name, pr_number, body))
-        # Mirror real GitHub behavior: once created, a subsequent list call
-        # would see it. Without this, the concurrency test below can never
-        # pass regardless of whether the lock in webhook.py actually
-        # serializes requests, since list_issue_comments would keep
-        # returning a stale empty snapshot.
-        self.existing_comments = [
-            *self.existing_comments, Comment(id=len(self.created), body=body, is_bot=True)
-        ]
+        self.created.append((repo_full_name, name, head_sha, conclusion, title, summary))
+        # Mirror real GitHub behavior: once created, a subsequent list call for
+        # this check_name would see it. Without this, the concurrency test
+        # below can never pass regardless of whether the lock in webhook.py
+        # actually serializes requests.
+        self._next_id += 1
+        self.runs.append(CheckRun(id=self._next_id, name=name))
 
-    async def update_comment(self, repo_full_name: str, comment_id: int, body: str) -> None:
-        self.updated.append((repo_full_name, comment_id, body))
-
-    async def delete_comment(self, repo_full_name: str, comment_id: int) -> None:
-        self.deleted.append((repo_full_name, comment_id))
+    async def update_check_run(
+        self, repo_full_name: str, check_run_id: int, conclusion: str, title: str, summary: str
+    ) -> None:
+        self.updated.append((repo_full_name, check_run_id, conclusion, title, summary))
 
 
 def _use_fake_client(monkeypatch: pytest.MonkeyPatch, fake_client) -> None:
@@ -132,23 +131,8 @@ async def test_ignores_an_unhandled_action():
     assert response.json() == {"status": "ignored"}
 
 
-async def test_creates_a_comment_when_description_is_missing_and_none_exists(monkeypatch):
-    fake_client = FakeGitHubClient(existing_comments=[])
-    _use_fake_client(monkeypatch, fake_client)
-
-    payload = _load_fixture("pull_request_opened.json")
-    response = await _post_webhook(payload)
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "actions": {"description": "create", "large_pr": "noop"}}
-    assert len(fake_client.created) == 1
-
-
-async def test_deletes_the_comment_once_a_description_is_added(monkeypatch):
-    from app.services.reconcile import DESCRIPTION_MARKER
-
-    existing = Comment(id=42, body=f"please add a description\n{DESCRIPTION_MARKER}", is_bot=True)
-    fake_client = FakeGitHubClient(existing_comments=[existing])
+async def test_creates_both_check_runs_reporting_success_when_nothing_is_wrong(monkeypatch):
+    fake_client = FakeGitHubClient(existing_runs=[])
     _use_fake_client(monkeypatch, fake_client)
 
     payload = _load_fixture("pull_request_opened.json")
@@ -156,43 +140,62 @@ async def test_deletes_the_comment_once_a_description_is_added(monkeypatch):
     response = await _post_webhook(payload)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "actions": {"description": "delete", "large_pr": "noop"}}
-    assert fake_client.deleted == [("octocat/hello-world", 42)]
-
-
-async def test_creates_a_comment_when_the_pr_is_too_large(monkeypatch):
-    fake_client = FakeGitHubClient(existing_comments=[])
-    _use_fake_client(monkeypatch, fake_client)
-
-    payload = _load_fixture("pull_request_opened.json")
-    payload["pull_request"]["body"] = "This fixes the pagination cursor off-by-one bug."
-    payload["pull_request"]["additions"] = 400
-    payload["pull_request"]["deletions"] = 200
-    response = await _post_webhook(payload)
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "actions": {"description": "noop", "large_pr": "create"}}
-    assert len(fake_client.created) == 1
-    assert "600" in fake_client.created[0][2]
-
-
-async def test_both_checks_can_fire_on_the_same_pr(monkeypatch):
-    fake_client = FakeGitHubClient(existing_comments=[])
-    _use_fake_client(monkeypatch, fake_client)
-
-    payload = _load_fixture("pull_request_opened.json")
-    payload["pull_request"]["additions"] = 400
-    payload["pull_request"]["deletions"] = 200
-    response = await _post_webhook(payload)
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "actions": {"description": "create", "large_pr": "create"}}
+    assert response.json() == {
+        "status": "ok",
+        "actions": {"pr-describe-bot/description": "create", "pr-describe-bot/pr-size": "create"},
+    }
     assert len(fake_client.created) == 2
+    conclusions = {c[1]: c[3] for c in fake_client.created}
+    assert conclusions == {"pr-describe-bot/description": "success", "pr-describe-bot/pr-size": "success"}
+
+
+async def test_creates_a_failing_check_run_when_description_is_missing(monkeypatch):
+    fake_client = FakeGitHubClient(existing_runs=[])
+    _use_fake_client(monkeypatch, fake_client)
+
+    payload = _load_fixture("pull_request_opened.json")
+    response = await _post_webhook(payload)
+
+    assert response.status_code == 200
+    description_call = next(c for c in fake_client.created if c[1] == "pr-describe-bot/description")
+    assert description_call[3] == "failure"
+
+
+async def test_updates_an_existing_check_run_instead_of_creating_a_duplicate(monkeypatch):
+    existing = CheckRun(id=42, name="pr-describe-bot/description")
+    fake_client = FakeGitHubClient(existing_runs=[existing])
+    _use_fake_client(monkeypatch, fake_client)
+
+    payload = _load_fixture("pull_request_opened.json")
+    payload["pull_request"]["body"] = "This fixes the pagination cursor off-by-one bug."
+    response = await _post_webhook(payload)
+
+    assert response.status_code == 200
+    assert response.json()["actions"]["pr-describe-bot/description"] == "update"
+    assert fake_client.updated[0][1] == 42
+    assert fake_client.updated[0][2] == "success"
+    assert not any(c[1] == "pr-describe-bot/description" for c in fake_client.created)
+
+
+async def test_creates_a_failing_check_run_when_the_pr_is_too_large(monkeypatch):
+    fake_client = FakeGitHubClient(existing_runs=[])
+    _use_fake_client(monkeypatch, fake_client)
+
+    payload = _load_fixture("pull_request_opened.json")
+    payload["pull_request"]["body"] = "This fixes the pagination cursor off-by-one bug."
+    payload["pull_request"]["additions"] = 400
+    payload["pull_request"]["deletions"] = 200
+    response = await _post_webhook(payload)
+
+    assert response.status_code == 200
+    large_pr_call = next(c for c in fake_client.created if c[1] == "pr-describe-bot/pr-size")
+    assert large_pr_call[3] == "failure"
+    assert "600" in large_pr_call[4]
 
 
 async def test_returns_500_when_the_github_client_raises(monkeypatch):
     class FailingClient(FakeGitHubClient):
-        async def list_issue_comments(self, repo_full_name: str, pr_number: int) -> list[Comment]:
+        async def list_check_runs_for_ref(self, repo_full_name: str, ref: str, check_name: str) -> list[CheckRun]:
             raise RuntimeError("GitHub is down")
 
     _use_fake_client(monkeypatch, FailingClient())
@@ -203,18 +206,18 @@ async def test_returns_500_when_the_github_client_raises(monkeypatch):
     assert response.status_code == 500
 
 
-async def test_concurrent_webhooks_for_the_same_pr_create_only_one_comment(monkeypatch):
-    fake_client = FakeGitHubClient(existing_comments=[])
+async def test_concurrent_webhooks_for_the_same_pr_create_only_one_check_run_per_name(monkeypatch):
+    fake_client = FakeGitHubClient(existing_runs=[])
     _use_fake_client(monkeypatch, fake_client)
 
     payload = _load_fixture("pull_request_opened.json")
-    # FakeGitHubClient.list_issue_comments/create_comment each suspend
+    # FakeGitHubClient.list_check_runs_for_ref/create_check_run each suspend
     # (await asyncio.sleep) before returning, so the two requests genuinely
     # interleave under asyncio.gather instead of running back-to-back.
     # Without the per-PR lock in app/routers/webhook.py serializing them,
-    # both would read the "no comments yet" snapshot before either creates
-    # one, and both would create a comment.
+    # both would see "no check run yet" before either creates one, and both
+    # would create a check run for each name.
     responses = await asyncio.gather(_post_webhook(payload), _post_webhook(payload))
 
     assert all(r.status_code == 200 for r in responses)
-    assert len(fake_client.created) == 1
+    assert len(fake_client.created) == 2  # one per check name, not two per name

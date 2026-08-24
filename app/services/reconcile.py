@@ -1,56 +1,55 @@
 from dataclasses import dataclass
-from enum import Enum
 
-from app.clients.github_client import Comment
+from app.clients.github_client import CheckRun
 from app.services.large_pr_check import LARGE_PR_THRESHOLD
 
-DESCRIPTION_MARKER = "<!-- pr-describe-bot:description-marker -->"
-
-DESCRIPTION_NAG_MESSAGE = (
-    "👋 This PR doesn't have a description yet. Mind adding one? "
-    "It helps reviewers (and future you) understand the *why* behind the change.\n\n"
-    + DESCRIPTION_MARKER
-)
-
-LARGE_PR_MARKER = "<!-- pr-describe-bot:large-pr-marker -->"
+DESCRIPTION_CHECK_NAME = "pr-describe-bot/description"
+LARGE_PR_CHECK_NAME = "pr-describe-bot/pr-size"
 
 
-def build_large_pr_message(total_changed_lines: int) -> str:
-    return (
-        f"📏 This PR changes {total_changed_lines} lines (additions + deletions), "
-        f"over the {LARGE_PR_THRESHOLD}-line guideline. Consider splitting it into "
-        "smaller PRs — they get reviewed faster and more thoroughly.\n\n" + LARGE_PR_MARKER
-    )
+def build_description_output(violation: bool) -> tuple[str, str]:
+    if violation:
+        return (
+            "Description missing",
+            (
+                "This PR doesn't have a description yet. Mind adding one? It helps reviewers "
+                "(and future you) understand the *why* behind the change."
+            ),
+        )
+    return ("Description present", "This PR has a description. 👍")
 
 
-class Action(Enum):
-    NOOP = "noop"
-    CREATE = "create"
-    UPDATE = "update"
-    DELETE = "delete"
+def build_large_pr_output(violation: bool, total_changed_lines: int) -> tuple[str, str]:
+    if violation:
+        return (
+            f"{total_changed_lines} lines changed",
+            (
+                f"This PR changes {total_changed_lines} lines (additions + deletions), over the "
+                f"{LARGE_PR_THRESHOLD}-line guideline. Consider splitting it into smaller PRs — "
+                "they get reviewed faster and more thoroughly."
+            ),
+        )
+    return (f"{total_changed_lines} lines changed", "This PR is a reasonable size. 👍")
+
+
+def conclusion_for(violation: bool) -> str:
+    return "failure" if violation else "success"
 
 
 @dataclass
 class ReconcileResult:
-    action: Action
-    comment_id: int | None = None
+    action: str  # "create" | "update"
+    check_run_id: int | None = None
 
 
-def find_marker_comment(comments: list[Comment], marker: str) -> Comment | None:
-    # Only a comment actually authored by a bot can be "ours" -- a human
-    # quoting/replying-with-quote to the bot's comment would otherwise match
-    # on the marker text and risk having their own comment edited or deleted.
-    for comment in comments:
-        if comment.is_bot and marker in comment.body:
-            return comment
+def find_check_run(check_runs: list[CheckRun], name: str) -> CheckRun | None:
+    for run in check_runs:
+        if run.name == name:
+            return run
     return None
 
 
-def decide_action(violation: bool, existing_comment: Comment | None) -> ReconcileResult:
-    if violation:
-        if existing_comment is None:
-            return ReconcileResult(Action.CREATE)
-        return ReconcileResult(Action.UPDATE, existing_comment.id)
-    if existing_comment is not None:
-        return ReconcileResult(Action.DELETE, existing_comment.id)
-    return ReconcileResult(Action.NOOP)
+def decide_action(existing_run: CheckRun | None) -> ReconcileResult:
+    if existing_run is None:
+        return ReconcileResult("create")
+    return ReconcileResult("update", existing_run.id)
