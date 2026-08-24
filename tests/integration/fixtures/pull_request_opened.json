@@ -3,7 +3,9 @@
   "number": 5,
   "pull_request": {
     "number": 5,
-    "body": null
+    "body": null,
+    "additions": 10,
+    "deletions": 5
   },
   "repository": {
     "full_name": "octocat/hello-world"

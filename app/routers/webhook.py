@@ -9,7 +9,16 @@ from app.core.github_auth import create_app_jwt, get_installation_token
 from app.core.locks import get_lock
 from app.core.signature import verify_signature
 from app.services.description_check import is_description_missing
-from app.services.reconcile import NAG_MESSAGE, Action, decide_action, find_marker_comment
+from app.services.large_pr_check import is_pr_too_large
+from app.services.reconcile import (
+    DESCRIPTION_MARKER,
+    DESCRIPTION_NAG_MESSAGE,
+    LARGE_PR_MARKER,
+    Action,
+    build_large_pr_message,
+    decide_action,
+    find_marker_comment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +39,7 @@ async def receive_webhook(
     x_hub_signature_256: str | None = Header(default=None),
     x_github_event: str | None = Header(default=None),
     x_github_delivery: str | None = Header(default=None),
-) -> dict[str, str]:
+) -> dict[str, object]:
     if not settings.github_webhook_secret:
         logger.error("GITHUB_WEBHOOK_SECRET is not configured; refusing webhook")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="not configured")
@@ -54,6 +63,8 @@ async def receive_webhook(
         installation_id = payload["installation"]["id"]
         pr_number = payload["pull_request"]["number"]
         pr_body = payload["pull_request"]["body"]
+        additions = payload["pull_request"]["additions"]
+        deletions = payload["pull_request"]["deletions"]
         repo_full_name = payload["repository"]["full_name"]
     except (KeyError, TypeError, AttributeError, json.JSONDecodeError):
         logger.warning(
@@ -66,19 +77,33 @@ async def receive_webhook(
         try:
             github_client = await get_github_client(installation_id)
             comments = await github_client.list_issue_comments(repo_full_name, pr_number)
-            existing = find_marker_comment(comments)
-            result = decide_action(is_description_missing(pr_body), existing)
 
-            if result.action == Action.CREATE:
-                await github_client.create_comment(repo_full_name, pr_number, NAG_MESSAGE)
-            elif result.action == Action.UPDATE:
-                await github_client.update_comment(repo_full_name, result.comment_id, NAG_MESSAGE)
-            elif result.action == Action.DELETE:
-                await github_client.delete_comment(repo_full_name, result.comment_id)
+            checks = (
+                ("description", DESCRIPTION_MARKER, is_description_missing(pr_body), DESCRIPTION_NAG_MESSAGE),
+                (
+                    "large_pr",
+                    LARGE_PR_MARKER,
+                    is_pr_too_large(additions, deletions),
+                    build_large_pr_message(additions + deletions),
+                ),
+            )
+
+            actions: dict[str, str] = {}
+            for name, marker, violation, message in checks:
+                existing = find_marker_comment(comments, marker)
+                result = decide_action(violation, existing)
+
+                if result.action == Action.CREATE:
+                    await github_client.create_comment(repo_full_name, pr_number, message)
+                elif result.action == Action.UPDATE:
+                    await github_client.update_comment(repo_full_name, result.comment_id, message)
+                elif result.action == Action.DELETE:
+                    await github_client.delete_comment(repo_full_name, result.comment_id)
+                actions[name] = result.action.value
         except Exception:
             logger.exception(
-                "Failed to reconcile PR comment for %s#%s", repo_full_name, pr_number
+                "Failed to reconcile PR comments for %s#%s", repo_full_name, pr_number
             )
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="reconcile failed")
 
-    return {"status": "ok", "action": result.action.value}
+    return {"status": "ok", "actions": actions}
