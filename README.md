@@ -56,3 +56,5 @@ effect.
 2. Fill in `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`.
 3. Once deployed, set the GitHub App's webhook URL to `https://<your-service>.onrender.com/webhook`.
 4. Install the App on this repository (and any other) to see it in action on real PRs.
+
+<!-- test PR to verify Check Runs -->
