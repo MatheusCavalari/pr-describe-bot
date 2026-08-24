@@ -1,12 +1,9 @@
-import logging
 from dataclasses import dataclass
 
 import httpx
 
 GITHUB_API_BASE = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,7 +39,7 @@ class GitHubClient:
 
     async def create_check_run(
         self, repo_full_name: str, name: str, head_sha: str, conclusion: str, title: str, summary: str
-    ) -> dict:
+    ) -> None:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{GITHUB_API_BASE}/repos/{repo_full_name}/check-runs",
@@ -56,7 +53,6 @@ class GitHubClient:
                 },
             )
             response.raise_for_status()
-            return {"status_code": response.status_code, "body": response.text[:500]}
 
     async def update_check_run(
         self, repo_full_name: str, check_run_id: int, conclusion: str, title: str, summary: str
