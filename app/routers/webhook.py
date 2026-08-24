@@ -11,13 +11,13 @@ from app.core.signature import verify_signature
 from app.services.description_check import is_description_missing
 from app.services.large_pr_check import is_pr_too_large
 from app.services.reconcile import (
-    DESCRIPTION_MARKER,
-    DESCRIPTION_NAG_MESSAGE,
-    LARGE_PR_MARKER,
-    Action,
-    build_large_pr_message,
+    DESCRIPTION_CHECK_NAME,
+    LARGE_PR_CHECK_NAME,
+    build_description_output,
+    build_large_pr_output,
+    conclusion_for,
     decide_action,
-    find_marker_comment,
+    find_check_run,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,7 @@ async def receive_webhook(
         pr_body = payload["pull_request"]["body"]
         additions = payload["pull_request"]["additions"]
         deletions = payload["pull_request"]["deletions"]
+        head_sha = payload["pull_request"]["head"]["sha"]
         repo_full_name = payload["repository"]["full_name"]
     except (KeyError, TypeError, AttributeError, json.JSONDecodeError):
         logger.warning(
@@ -72,37 +73,45 @@ async def receive_webhook(
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unexpected payload shape")
 
+    total_changed_lines = additions + deletions
+
     lock = get_lock(repo_full_name, pr_number)
     async with lock:
         try:
             github_client = await get_github_client(installation_id)
-            comments = await github_client.list_issue_comments(repo_full_name, pr_number)
 
+            description_violation = is_description_missing(pr_body)
+            large_pr_violation = is_pr_too_large(additions, deletions)
             checks = (
-                ("description", DESCRIPTION_MARKER, is_description_missing(pr_body), DESCRIPTION_NAG_MESSAGE),
+                (DESCRIPTION_CHECK_NAME, description_violation, *build_description_output(description_violation)),
                 (
-                    "large_pr",
-                    LARGE_PR_MARKER,
-                    is_pr_too_large(additions, deletions),
-                    build_large_pr_message(additions + deletions),
+                    LARGE_PR_CHECK_NAME,
+                    large_pr_violation,
+                    *build_large_pr_output(large_pr_violation, total_changed_lines),
                 ),
             )
 
             actions: dict[str, str] = {}
-            for name, marker, violation, message in checks:
-                existing = find_marker_comment(comments, marker)
-                result = decide_action(violation, existing)
+            for name, violation, title, summary in checks:
+                existing_runs = await github_client.list_check_runs_for_ref(
+                    repo_full_name, head_sha, name
+                )
+                existing = find_check_run(existing_runs, name)
+                result = decide_action(existing)
+                conclusion = conclusion_for(violation)
 
-                if result.action == Action.CREATE:
-                    await github_client.create_comment(repo_full_name, pr_number, message)
-                elif result.action == Action.UPDATE:
-                    await github_client.update_comment(repo_full_name, result.comment_id, message)
-                elif result.action == Action.DELETE:
-                    await github_client.delete_comment(repo_full_name, result.comment_id)
-                actions[name] = result.action.value
+                if result.action == "create":
+                    await github_client.create_check_run(
+                        repo_full_name, name, head_sha, conclusion, title, summary
+                    )
+                else:
+                    await github_client.update_check_run(
+                        repo_full_name, result.check_run_id, conclusion, title, summary
+                    )
+                actions[name] = result.action
         except Exception:
             logger.exception(
-                "Failed to reconcile PR comments for %s#%s", repo_full_name, pr_number
+                "Failed to reconcile check runs for %s#%s", repo_full_name, pr_number
             )
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="reconcile failed")
 

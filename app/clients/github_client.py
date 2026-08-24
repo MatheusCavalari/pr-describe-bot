@@ -7,10 +7,9 @@ GITHUB_API_VERSION = "2022-11-28"
 
 
 @dataclass
-class Comment:
+class CheckRun:
     id: int
-    body: str
-    is_bot: bool = False
+    name: str
 
 
 class GitHubClient:
@@ -24,41 +23,48 @@ class GitHubClient:
             "X-GitHub-Api-Version": GITHUB_API_VERSION,
         }
 
-    async def list_issue_comments(self, repo_full_name: str, pr_number: int) -> list[Comment]:
+    async def list_check_runs_for_ref(
+        self, repo_full_name: str, ref: str, check_name: str
+    ) -> list[CheckRun]:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{GITHUB_API_BASE}/repos/{repo_full_name}/issues/{pr_number}/comments",
+                f"{GITHUB_API_BASE}/repos/{repo_full_name}/commits/{ref}/check-runs",
                 headers=self._headers(),
-                params={"per_page": 100},
+                params={"check_name": check_name, "per_page": 100},
             )
             response.raise_for_status()
             return [
-                Comment(id=c["id"], body=c["body"], is_bot=c.get("user", {}).get("type") == "Bot")
-                for c in response.json()
+                CheckRun(id=r["id"], name=r["name"]) for r in response.json()["check_runs"]
             ]
 
-    async def create_comment(self, repo_full_name: str, pr_number: int, body: str) -> None:
+    async def create_check_run(
+        self, repo_full_name: str, name: str, head_sha: str, conclusion: str, title: str, summary: str
+    ) -> None:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{GITHUB_API_BASE}/repos/{repo_full_name}/issues/{pr_number}/comments",
+                f"{GITHUB_API_BASE}/repos/{repo_full_name}/check-runs",
                 headers=self._headers(),
-                json={"body": body},
+                json={
+                    "name": name,
+                    "head_sha": head_sha,
+                    "status": "completed",
+                    "conclusion": conclusion,
+                    "output": {"title": title, "summary": summary},
+                },
             )
             response.raise_for_status()
 
-    async def update_comment(self, repo_full_name: str, comment_id: int, body: str) -> None:
+    async def update_check_run(
+        self, repo_full_name: str, check_run_id: int, conclusion: str, title: str, summary: str
+    ) -> None:
         async with httpx.AsyncClient() as client:
             response = await client.patch(
-                f"{GITHUB_API_BASE}/repos/{repo_full_name}/issues/comments/{comment_id}",
+                f"{GITHUB_API_BASE}/repos/{repo_full_name}/check-runs/{check_run_id}",
                 headers=self._headers(),
-                json={"body": body},
-            )
-            response.raise_for_status()
-
-    async def delete_comment(self, repo_full_name: str, comment_id: int) -> None:
-        async with httpx.AsyncClient() as client:
-            response = await client.delete(
-                f"{GITHUB_API_BASE}/repos/{repo_full_name}/issues/comments/{comment_id}",
-                headers=self._headers(),
+                json={
+                    "status": "completed",
+                    "conclusion": conclusion,
+                    "output": {"title": title, "summary": summary},
+                },
             )
             response.raise_for_status()

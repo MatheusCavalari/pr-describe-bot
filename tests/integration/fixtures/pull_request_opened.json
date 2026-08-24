@@ -5,7 +5,10 @@
     "number": 5,
     "body": null,
     "additions": 10,
-    "deletions": 5
+    "deletions": 5,
+    "head": {
+      "sha": "abc123"
+    }
   },
   "repository": {
     "full_name": "octocat/hello-world"
