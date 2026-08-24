@@ -56,7 +56,7 @@ class GitHubClient:
                 },
             )
             response.raise_for_status()
-            logger.info("create_check_run response: status=%s body=%s", response.status_code, response.text)
+            logger.warning("create_check_run response: status=%s body=%s", response.status_code, response.text)
 
     async def update_check_run(
         self, repo_full_name: str, check_run_id: int, conclusion: str, title: str, summary: str
