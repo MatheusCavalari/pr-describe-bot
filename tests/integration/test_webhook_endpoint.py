@@ -47,7 +47,9 @@ class FakeGitHubClient:
         # pass regardless of whether the lock in webhook.py actually
         # serializes requests, since list_issue_comments would keep
         # returning a stale empty snapshot.
-        self.existing_comments = [*self.existing_comments, Comment(id=len(self.created), body=body)]
+        self.existing_comments = [
+            *self.existing_comments, Comment(id=len(self.created), body=body, is_bot=True)
+        ]
 
     async def update_comment(self, repo_full_name: str, comment_id: int, body: str) -> None:
         self.updated.append((repo_full_name, comment_id, body))
@@ -138,14 +140,14 @@ async def test_creates_a_comment_when_description_is_missing_and_none_exists(mon
     response = await _post_webhook(payload)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "action": "create"}
+    assert response.json() == {"status": "ok", "actions": {"description": "create", "large_pr": "noop"}}
     assert len(fake_client.created) == 1
 
 
 async def test_deletes_the_comment_once_a_description_is_added(monkeypatch):
-    from app.services.reconcile import MARKER
+    from app.services.reconcile import DESCRIPTION_MARKER
 
-    existing = Comment(id=42, body=f"please add a description\n{MARKER}")
+    existing = Comment(id=42, body=f"please add a description\n{DESCRIPTION_MARKER}", is_bot=True)
     fake_client = FakeGitHubClient(existing_comments=[existing])
     _use_fake_client(monkeypatch, fake_client)
 
@@ -154,8 +156,38 @@ async def test_deletes_the_comment_once_a_description_is_added(monkeypatch):
     response = await _post_webhook(payload)
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "action": "delete"}
+    assert response.json() == {"status": "ok", "actions": {"description": "delete", "large_pr": "noop"}}
     assert fake_client.deleted == [("octocat/hello-world", 42)]
+
+
+async def test_creates_a_comment_when_the_pr_is_too_large(monkeypatch):
+    fake_client = FakeGitHubClient(existing_comments=[])
+    _use_fake_client(monkeypatch, fake_client)
+
+    payload = _load_fixture("pull_request_opened.json")
+    payload["pull_request"]["body"] = "This fixes the pagination cursor off-by-one bug."
+    payload["pull_request"]["additions"] = 400
+    payload["pull_request"]["deletions"] = 200
+    response = await _post_webhook(payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "actions": {"description": "noop", "large_pr": "create"}}
+    assert len(fake_client.created) == 1
+    assert "600" in fake_client.created[0][2]
+
+
+async def test_both_checks_can_fire_on_the_same_pr(monkeypatch):
+    fake_client = FakeGitHubClient(existing_comments=[])
+    _use_fake_client(monkeypatch, fake_client)
+
+    payload = _load_fixture("pull_request_opened.json")
+    payload["pull_request"]["additions"] = 400
+    payload["pull_request"]["deletions"] = 200
+    response = await _post_webhook(payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "actions": {"description": "create", "large_pr": "create"}}
+    assert len(fake_client.created) == 2
 
 
 async def test_returns_500_when_the_github_client_raises(monkeypatch):

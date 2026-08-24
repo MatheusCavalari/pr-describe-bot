@@ -1,16 +1,27 @@
 # PR Describe Bot
 
-A GitHub App that comments on a pull request when it's missing a description,
-and removes the comment once one is added. Built to demonstrate GitHub App
-auth (JWT + installation tokens), webhook signature verification, and
-idempotent reconciliation against an external API -- no database needed.
+A GitHub App that comments on a pull request when it fails one of a small
+set of checks, and removes the comment once it's fixed. Built to demonstrate
+GitHub App auth (JWT + installation tokens), webhook signature verification,
+and idempotent reconciliation against an external API -- no database needed.
+
+## Checks
+
+- **Missing description** -- the PR body is empty, or too short once any
+  HTML-comment template boilerplate is stripped out.
+- **PR too large** -- the diff changes more than 500 lines (additions +
+  deletions combined). Large PRs get reviewed less thoroughly; the comment
+  suggests splitting it up.
+
+Each check gets its own marker-tagged comment, so they don't interfere with
+each other -- a PR can be nagged for both at once, or either independently.
 
 ## How it works
 
 1. GitHub delivers a `pull_request` webhook (`opened`/`edited`/`synchronize`/`reopened`) to `POST /webhook`.
 2. The signature is verified (HMAC-SHA256) against the App's webhook secret.
-3. The bot authenticates as the GitHub App (short-lived JWT -> installation access token) and checks the PR body.
-4. If the description is missing, it posts (or updates) a single marker-tagged comment on the PR. Once a real description is added, that comment is removed.
+3. The bot authenticates as the GitHub App (short-lived JWT -> installation access token) and runs every check against the PR.
+4. For each check that fails, it posts (or updates) that check's marker-tagged comment; for each that passes, it removes that comment if one exists. Only a comment actually authored by the bot (verified via the GitHub API's `user.type == "Bot"`) is ever touched -- a human quoting the bot's comment back can't accidentally have their own comment edited or deleted.
 
 ## Local development
 

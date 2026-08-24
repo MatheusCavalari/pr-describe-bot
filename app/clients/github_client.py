@@ -10,6 +10,7 @@ GITHUB_API_VERSION = "2022-11-28"
 class Comment:
     id: int
     body: str
+    is_bot: bool = False
 
 
 class GitHubClient:
@@ -31,7 +32,10 @@ class GitHubClient:
                 params={"per_page": 100},
             )
             response.raise_for_status()
-            return [Comment(id=c["id"], body=c["body"]) for c in response.json()]
+            return [
+                Comment(id=c["id"], body=c["body"], is_bot=c.get("user", {}).get("type") == "Bot")
+                for c in response.json()
+            ]
 
     async def create_comment(self, repo_full_name: str, pr_number: int, body: str) -> None:
         async with httpx.AsyncClient() as client:

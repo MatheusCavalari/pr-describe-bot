@@ -11,14 +11,33 @@ REPO = "octocat/hello-world"
 async def test_list_issue_comments_parses_the_response():
     respx.get(f"https://api.github.com/repos/{REPO}/issues/5/comments").mock(
         return_value=httpx.Response(
-            200, json=[{"id": 1, "body": "first"}, {"id": 2, "body": "second"}]
+            200,
+            json=[
+                {"id": 1, "body": "first", "user": {"type": "Bot"}},
+                {"id": 2, "body": "second", "user": {"type": "User"}},
+            ],
         )
     )
     client = GitHubClient("fake-token")
 
     comments = await client.list_issue_comments(REPO, 5)
 
-    assert [(c.id, c.body) for c in comments] == [(1, "first"), (2, "second")]
+    assert [(c.id, c.body, c.is_bot) for c in comments] == [
+        (1, "first", True),
+        (2, "second", False),
+    ]
+
+
+@respx.mock
+async def test_list_issue_comments_treats_missing_user_as_not_bot():
+    respx.get(f"https://api.github.com/repos/{REPO}/issues/5/comments").mock(
+        return_value=httpx.Response(200, json=[{"id": 1, "body": "first"}])
+    )
+    client = GitHubClient("fake-token")
+
+    comments = await client.list_issue_comments(REPO, 5)
+
+    assert comments[0].is_bot is False
 
 
 @respx.mock
