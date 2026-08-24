@@ -92,16 +92,18 @@ async def receive_webhook(
             )
 
             actions: dict[str, str] = {}
+            debug: dict[str, object] = {}
             for name, violation, title, summary in checks:
                 existing_runs = await github_client.list_check_runs_for_ref(
                     repo_full_name, head_sha, name
                 )
+                debug[f"{name}:existing_runs"] = [{"id": r.id, "name": r.name} for r in existing_runs]
                 existing = find_check_run(existing_runs, name)
                 result = decide_action(existing)
                 conclusion = conclusion_for(violation)
 
                 if result.action == "create":
-                    await github_client.create_check_run(
+                    debug[f"{name}:create"] = await github_client.create_check_run(
                         repo_full_name, name, head_sha, conclusion, title, summary
                     )
                 else:
@@ -115,4 +117,4 @@ async def receive_webhook(
             )
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="reconcile failed")
 
-    return {"status": "ok", "actions": actions}
+    return {"status": "ok", "actions": actions, "debug": debug}
